@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import json
 import time
+import io
+import fitz  # PyMuPDF for handling PDFs
 from PIL import Image
 from google import genai
 from google.genai import types
@@ -12,16 +14,8 @@ st.set_page_config(page_title="MediParse AI", page_icon="🏥", layout="wide")
 
 st.markdown("""
     <style>
-    /* Clean up the main container */
     .main .block-container { padding-top: 2rem; max-width: 95%; }
-    
-    /* Style the metric cards */
-    [data-testid="stMetricValue"] {
-        font-size: 2.5rem;
-        color: #0068c9;
-    }
-    
-    /* Subtle gradient header */
+    [data-testid="stMetricValue"] { font-size: 2.5rem; color: #0068c9; }
     .custom-header {
         background: linear-gradient(90deg, #0068c9 0%, #00b4d8 100%);
         -webkit-background-clip: text;
@@ -77,6 +71,22 @@ def highlight_abnormal(val):
             return 'background-color: #fff8e1; color: #f57f17;'
     return ''
 
+def process_file_to_images(file):
+    """Converts uploaded file (Image or PDF) into a list of PIL Images."""
+    images = []
+    if file.name.lower().endswith('.pdf'):
+        # Open PDF from bytes
+        doc = fitz.open(stream=file.read(), filetype="pdf")
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            pix = page.get_pixmap()
+            img_data = pix.tobytes("png")
+            images.append(Image.open(io.BytesIO(img_data)))
+    else:
+        # It's an image file
+        images.append(Image.open(file))
+    return images
+
 # --- SIDEBAR UI ---
 with st.sidebar:
     st.markdown("## 🏥 MediParse AI")
@@ -84,31 +94,22 @@ with st.sidebar:
     st.divider()
     
     st.markdown("### 1. Upload Documents")
-    uploaded_files = st.file_uploader("Select Lab Reports", type=["jpg", "jpeg", "png"], accept_multiple_files=True, label_visibility="collapsed")
+    # Added PDF support here!
+    uploaded_files = st.file_uploader("Select Lab Reports", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True, label_visibility="collapsed")
     
     st.divider()
-    st.info("💡 **Workflow:**\n1. Upload batches of images.\n2. Review automated charts.\n3. Edit data directly in the grid.\n4. Export to Excel.")
+    st.info("💡 **Workflow:**\n1. Upload batches of images or PDFs.\n2. Review automated charts.\n3. Edit data directly in the grid.\n4. Export to Excel.")
 
 # --- MAIN CANVAS UI ---
 st.markdown('<div class="custom-header">Medical Report Processing Hub</div>', unsafe_allow_html=True)
 
-# Three logical tabs
 tab1, tab2, tab3 = st.tabs(["📤 Upload & Process", "📈 Analytics Dashboard", "✏️ Data Grid & Export"])
 
 with tab1:
     if not uploaded_files:
-        st.info("👈 **Awaiting Documents:** Please upload medical report images in the sidebar to begin processing.")
+        st.info("👈 **Awaiting Documents:** Please upload medical report images or PDFs in the sidebar to begin processing.")
     else:
         st.markdown(f"**{len(uploaded_files)} Document(s) Ready for Processing**")
-        
-        # Display thumbnails
-        cols = st.columns(min(len(uploaded_files), 6))
-        for i, file in enumerate(uploaded_files[:6]):
-            cols[i].image(Image.open(file), use_container_width=True)
-        if len(uploaded_files) > 6:
-            st.caption(f"...and {len(uploaded_files) - 6} more.")
-        
-        st.divider()
         
         if st.button("🚀 Process Batch", type="primary"):
             st.session_state['processing_done'] = False
@@ -120,28 +121,44 @@ with tab1:
             for index, file in enumerate(uploaded_files):
                 my_bar.progress((index) / len(uploaded_files), text=f"Analyzing {file.name}...")
                 
-                image = Image.open(file)
-                raw_json = extract_data_from_image(image, API_KEY)
+                # Convert the file (PDF or Image) into a list of images
+                report_images = process_file_to_images(file)
                 
-                if raw_json:
-                    metadata = raw_json.get("metadata", {})
-                    patient_row = {
-                        "Source File": file.name,
-                        "Lab Name": metadata.get("lab_name", "Unknown"),
-                        "Report Date": metadata.get("date", "Unknown"),
-                        "Age": metadata.get("age", "Unknown"),
-                        "Gender": metadata.get("gender", "Unknown")
-                    }
+                # We will merge data if a PDF has multiple pages for the same patient
+                combined_patient_row = {
+                    "Source File": file.name,
+                    "Lab Name": "Unknown",
+                    "Report Date": "Unknown",
+                    "Age": "Unknown",
+                    "Gender": "Unknown"
+                }
+                
+                for img in report_images:
+                    raw_json = extract_data_from_image(img, API_KEY)
                     
-                    for item in raw_json.get("tests", []):
-                        raw_name = item.get("parameter", "").strip()
-                        std_name = STANDARD_TERMS.get(raw_name, raw_name)
-                        cell_value = f"{item.get('result', '')} {item.get('unit', '')}".strip()
-                        if item.get("flag") in ["High", "Low"]:
-                            cell_value += f" ({item['flag']})"
-                        patient_row[std_name] = cell_value
+                    if raw_json:
+                        metadata = raw_json.get("metadata", {})
+                        # Update metadata if we found it on this page
+                        if metadata.get("lab_name") and combined_patient_row["Lab Name"] == "Unknown":
+                            combined_patient_row["Lab Name"] = metadata.get("lab_name")
+                        if metadata.get("date") and combined_patient_row["Report Date"] == "Unknown":
+                            combined_patient_row["Report Date"] = metadata.get("date")
+                        if metadata.get("age") and combined_patient_row["Age"] == "Unknown":
+                            combined_patient_row["Age"] = metadata.get("age")
+                        if metadata.get("gender") and combined_patient_row["Gender"] == "Unknown":
+                            combined_patient_row["Gender"] = metadata.get("gender")
                         
-                    all_patients_data.append(patient_row)
+                        # Extract tests from this page
+                        for item in raw_json.get("tests", []):
+                            raw_name = item.get("parameter", "").strip()
+                            std_name = STANDARD_TERMS.get(raw_name, raw_name)
+                            cell_value = f"{item.get('result', '')} {item.get('unit', '')}".strip()
+                            if item.get("flag") in ["High", "Low"]:
+                                cell_value += f" ({item['flag']})"
+                            
+                            combined_patient_row[std_name] = cell_value
+                            
+                all_patients_data.append(combined_patient_row)
                 
                 if index < len(uploaded_files) - 1:
                     time.sleep(3) 
@@ -158,35 +175,21 @@ with tab2:
         metadata_cols = ["Source File", "Lab Name", "Report Date", "Age", "Gender"]
         test_cols = sorted([col for col in df.columns if col not in metadata_cols])
         
-        # --- TOP METRICS ---
         m1, m2, m3 = st.columns(3)
         m1.metric("Total Patient Records", len(df))
         m2.metric("Unique Tests Tracked", len(test_cols))
-        
-        # Calculate total abnormalities
         abnormal_count = df[test_cols].astype(str).apply(lambda x: x.str.contains(r'\(High\)|\(Low\)')).sum().sum()
         m3.metric("Abnormal Flags Detected", abnormal_count)
         
         st.divider()
-        
-        # --- VISUALIZATION ---
         st.subheader("Test Frequency Across Batch")
-        # Count how many non-null values exist in each test column
         test_counts = df[test_cols].notna().sum().reset_index()
         test_counts.columns = ['Test Name', 'Number of Patients']
         test_counts = test_counts[test_counts['Number of Patients'] > 0].sort_values(by='Number of Patients', ascending=False)
         
-        fig = px.bar(
-            test_counts, 
-            x='Test Name', 
-            y='Number of Patients',
-            color='Number of Patients',
-            color_continuous_scale='Blues',
-            text='Number of Patients'
-        )
+        fig = px.bar(test_counts, x='Test Name', y='Number of Patients', color='Number of Patients', color_continuous_scale='Blues', text='Number of Patients')
         fig.update_layout(xaxis_tickangle=-45, margin=dict(t=20, b=20, l=0, r=0))
         st.plotly_chart(fig, use_container_width=True)
-        
     else:
         st.info("📊 Run a batch in the Upload tab to generate analytics.")
 
@@ -200,32 +203,15 @@ with tab3:
         test_cols = sorted([col for col in df.columns if col not in metadata_cols])
         df = df[metadata_cols + test_cols]
         
-        # Use data_editor instead of dataframe!
         styled_df = df.style.map(highlight_abnormal, subset=test_cols)
-        
-        # Capture the edited dataframe
-        edited_df = st.data_editor(
-            styled_df,
-            use_container_width=True,
-            num_rows="dynamic", # Allows user to delete a row if they want
-            height=400
-        )
+        edited_df = st.data_editor(styled_df, use_container_width=True, num_rows="dynamic", height=400)
         
         st.divider()
-        
         col1, col2 = st.columns([1, 4])
         with col1:
             excel_file = "MediParse_Master_Data.xlsx"
-            # Save the EDITED dataframe to Excel, not the raw one
             edited_df.to_excel(excel_file, index=False)
             with open(excel_file, "rb") as f:
-                st.download_button(
-                    label="📥 Download Excel",
-                    data=f,
-                    file_name=excel_file,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary",
-                    use_container_width=True
-                )
+                st.download_button(label="📥 Download Excel", data=f, file_name=excel_file, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
     else:
         st.info("✏️ Run a batch to populate the data grid.")
