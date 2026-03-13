@@ -187,36 +187,59 @@ with tab2:
         
         # --- DYNAMIC VISUALIZATION ---
         if len(df) == 1:
-            # SINGLE PATIENT VIEW: Show Normal vs Abnormal Breakdown
             st.subheader("Patient Health Overview")
             st.caption("Breakdown of test results for this individual report.")
             
             # Extract the single patient's tests, dropping empty ones
             patient_data = df.iloc[0][test_cols].dropna().astype(str)
             
-            # Count the flags
-            high_count = patient_data.str.contains(r'\(High\)').sum()
-            low_count = patient_data.str.contains(r'\(Low\)').sum()
+            # Identify the specific abnormal tests
+            high_tests = patient_data[patient_data.str.contains(r'\(High\)')]
+            low_tests = patient_data[patient_data.str.contains(r'\(Low\)')]
+            
+            high_count = len(high_tests)
+            low_count = len(low_tests)
             normal_count = len(patient_data) - high_count - low_count
             
-            # Create a dataframe for the Plotly donut chart
             status_df = pd.DataFrame({
                 'Status': ['Normal', 'High', 'Low'],
                 'Count': [normal_count, high_count, low_count]
             })
-            status_df = status_df[status_df['Count'] > 0] # Remove zeros
+            status_df = status_df[status_df['Count'] > 0]
             
-            # Build the Donut Chart
-            fig = px.pie(
-                status_df, 
-                values='Count', 
-                names='Status', 
-                hole=0.4,
-                color='Status',
-                color_discrete_map={'Normal':'#2e7d32', 'High':'#c62828', 'Low':'#f57f17'} # Green, Red, Orange
-            )
-            fig.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig, use_container_width=True)
+            # Split the UI into two columns
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                # Build the Donut Chart
+                fig = px.pie(
+                    status_df, 
+                    values='Count', 
+                    names='Status', 
+                    hole=0.4,
+                    color='Status',
+                    color_discrete_map={'Normal':'#2e7d32', 'High':'#c62828', 'Low':'#f57f17'}
+                )
+                fig.update_traces(textposition='inside', textinfo='percent+label')
+                fig.update_layout(showlegend=False, margin=dict(t=0, b=0, l=0, r=0))
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                # Display the specific abnormal readings list
+                st.markdown("### ⚠️ Abnormal Readings Details")
+                
+                if high_count == 0 and low_count == 0:
+                    st.success("All test results are within normal biological reference ranges.")
+                else:
+                    if high_count > 0:
+                        st.error("**Elevated (High):**")
+                        for test_name, value in high_tests.items():
+                            st.write(f"- **{test_name}:** {value}")
+                    
+                    if low_count > 0:
+                        st.warning("**Depleted (Low):**")
+                        for test_name, value in low_tests.items():
+                            st.write(f"- **{test_name}:** {value}")
             
         else:
             # BATCH VIEW: Show the original Test Frequency Chart
