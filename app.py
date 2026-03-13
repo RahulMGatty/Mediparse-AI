@@ -175,24 +175,71 @@ with tab2:
         metadata_cols = ["Source File", "Lab Name", "Report Date", "Age", "Gender"]
         test_cols = sorted([col for col in df.columns if col not in metadata_cols])
         
+        # --- TOP METRICS ---
         m1, m2, m3 = st.columns(3)
         m1.metric("Total Patient Records", len(df))
         m2.metric("Unique Tests Tracked", len(test_cols))
+        
         abnormal_count = df[test_cols].astype(str).apply(lambda x: x.str.contains(r'\(High\)|\(Low\)')).sum().sum()
         m3.metric("Abnormal Flags Detected", abnormal_count)
         
         st.divider()
-        st.subheader("Test Frequency Across Batch")
-        test_counts = df[test_cols].notna().sum().reset_index()
-        test_counts.columns = ['Test Name', 'Number of Patients']
-        test_counts = test_counts[test_counts['Number of Patients'] > 0].sort_values(by='Number of Patients', ascending=False)
         
-        fig = px.bar(test_counts, x='Test Name', y='Number of Patients', color='Number of Patients', color_continuous_scale='Blues', text='Number of Patients')
-        fig.update_layout(xaxis_tickangle=-45, margin=dict(t=20, b=20, l=0, r=0))
-        st.plotly_chart(fig, use_container_width=True)
+        # --- DYNAMIC VISUALIZATION ---
+        if len(df) == 1:
+            # SINGLE PATIENT VIEW: Show Normal vs Abnormal Breakdown
+            st.subheader("Patient Health Overview")
+            st.caption("Breakdown of test results for this individual report.")
+            
+            # Extract the single patient's tests, dropping empty ones
+            patient_data = df.iloc[0][test_cols].dropna().astype(str)
+            
+            # Count the flags
+            high_count = patient_data.str.contains(r'\(High\)').sum()
+            low_count = patient_data.str.contains(r'\(Low\)').sum()
+            normal_count = len(patient_data) - high_count - low_count
+            
+            # Create a dataframe for the Plotly donut chart
+            status_df = pd.DataFrame({
+                'Status': ['Normal', 'High', 'Low'],
+                'Count': [normal_count, high_count, low_count]
+            })
+            status_df = status_df[status_df['Count'] > 0] # Remove zeros
+            
+            # Build the Donut Chart
+            fig = px.pie(
+                status_df, 
+                values='Count', 
+                names='Status', 
+                hole=0.4,
+                color='Status',
+                color_discrete_map={'Normal':'#2e7d32', 'High':'#c62828', 'Low':'#f57f17'} # Green, Red, Orange
+            )
+            fig.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig, use_container_width=True)
+            
+        else:
+            # BATCH VIEW: Show the original Test Frequency Chart
+            st.subheader("Test Frequency Across Batch")
+            st.caption("Showing which tests were most commonly ordered across all uploaded patients.")
+            
+            test_counts = df[test_cols].notna().sum().reset_index()
+            test_counts.columns = ['Test Name', 'Number of Patients']
+            test_counts = test_counts[test_counts['Number of Patients'] > 0].sort_values(by='Number of Patients', ascending=False)
+            
+            fig = px.bar(
+                test_counts, 
+                x='Test Name', 
+                y='Number of Patients',
+                color='Number of Patients',
+                color_continuous_scale='Blues',
+                text='Number of Patients'
+            )
+            fig.update_layout(xaxis_tickangle=-45, margin=dict(t=20, b=20, l=0, r=0))
+            st.plotly_chart(fig, use_container_width=True)
+            
     else:
-        st.info("📊 Run a batch in the Upload tab to generate analytics.")
-
+        st.info("📊 Run an extraction in the Upload tab to generate analytics.")
 with tab3:
     if 'processing_done' in st.session_state and st.session_state['processing_done']:
         st.subheader("Interactive Data Grid")
